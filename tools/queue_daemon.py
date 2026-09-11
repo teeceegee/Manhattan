@@ -298,23 +298,28 @@ def run_daemon():
             time.sleep(30)
             continue
 
-        queue_file = os.path.join(video_mount, QUEUE_FILE_REL)
-        status_file = os.path.join(video_mount, STATUS_FILE_REL)
+        try:
+            queue_file = os.path.join(video_mount, QUEUE_FILE_REL)
+            status_file = os.path.join(video_mount, STATUS_FILE_REL)
 
-        if not os.path.exists(queue_file):
-            with open(queue_file, "w") as f:
-                f.write("# ==============================================================================\n")
-                f.write("# ARGOLIS AI UPSCALE QUEUE\n")
-                f.write("# Add show paths, series folders, or single video files below.\n")
-                f.write("# Processing runs automatically on the 16-Core Apple Neural Engine.\n")
-                f.write("# ==============================================================================\n\n")
+            if not os.path.exists(queue_file):
+                with open(queue_file, "w") as f:
+                    f.write("# ==============================================================================\n")
+                    f.write("# ARGOLIS AI UPSCALE QUEUE\n")
+                    f.write("# Add show paths, series folders, or single video files below.\n")
+                    f.write("# Processing runs automatically on the 16-Core Apple Neural Engine.\n")
+                    f.write("# ==============================================================================\n\n")
 
-        queue_items = read_queue(queue_file)
-        pending_jobs = find_pending_episodes(video_mount, queue_items, ignore_set=failed_jobs)
+            queue_items = read_queue(queue_file)
+            pending_jobs = find_pending_episodes(video_mount, queue_items, ignore_set=failed_jobs)
 
-        if not pending_jobs:
-            update_status(status_file, current_job=None, completed_jobs=completed_history, pending_jobs=[])
-            time.sleep(20)
+            if not pending_jobs:
+                update_status(status_file, current_job=None, completed_jobs=completed_history, pending_jobs=[])
+                time.sleep(20)
+                continue
+        except Exception as e:
+            log(f"Transient error checking queue on {video_mount}: {e}")
+            time.sleep(15)
             continue
 
         job = pending_jobs[0]
