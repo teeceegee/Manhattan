@@ -1,0 +1,52 @@
+{
+  "episodes": {
+    "One_Foot_in_The_Grave_s01e01_1._Alive_and_Buried": {
+      "status": "COMPLETED",
+      "series": "Series 1",
+      "filename": "One Foot in The Grave s01e01 1. Alive and Buried.mp4",
+      "target_name": "One Foot in The Grave s01e01 1. Alive and Buried - 1080p (4-3 Master).mp4",
+      "shada_path": "/Users/tony/VIDEO/TV/COMEDY/One Foot in The Grave/Series 1/One Foot in The Grave s01e01 1. Alive and Buried - 1080p (4-3 Master).mp4",
+      "size_mb": 1062.4,
+      "completed_at": "2026-08-30T19:28:05.420814"
+    },
+    "One_Foot_in_The_Grave_s01e02_2._The_Big_Sleep": {
+      "status": "COMPLETED",
+      "series": "Series 1",
+      "filename": "One Foot in The Grave s01e02 2. The Big Sleep.mp4",
+      "target_name": "One Foot in The Grave s01e02 2. The Big Sleep - 1080p (4-3 Master).mp4",
+      "shada_path": "/Users/tony/VIDEO/TV/COMEDY/One Foot in The Grave/Series 1/One Foot in The Grave s01e02 2. The Big Sleep - 1080p (4-3 Master).mp4",
+      "size_mb": 1041.46,
+      "completed_at": "2026-08-30T20:38:39.370839"
+    },
+    "One_Foot_in_The_Grave_s01e03_3._The_Valley_of_Fear": {
+      "status": "COMPLETED",
+      "series": "Series 1",
+      "filename": "One Foot in The Grave s01e03 3. The Valley of Fear.mp4",
+      "target_name": "One Foot in The Grave s01e03 3. The Valley of Fear - 1080p (4-3 Master).mp4",
+      "shada_path": "/Users/tony/VIDEO/TV/COMEDY/One Foot in The Grave/Series 1/One Foot in The Grave s01e03 3. The Valley of Fear - 1080p (4-3 Master).mp4",
+      "size_mb": 1084.29,
+      "completed_at": "2026-08-30T20:38:39.396686"
+    },
+    "One_Foot_in_The_Grave_s01e04_4._I'll_Retire_to_Bedlam": {
+      "status": "COMPLETED",
+      "series": "Series 1",
+      "filename": "One Foot in The Grave s01e04 4. I'll Retire to Bedlam.mp4",
+      "target_name": "One Foot in The Grave s01e04 4. I'll Retire to Bedlam - 1080p (4-3 Master).mp4",
+      "shada_path": "/Users/tony/VIDEO/TV/COMEDY/One Foot in The Grave/Series 1/One Foot in The Grave s01e04 4. I'll Retire to Bedlam - 1080p (4-3 Master).mp4",
+      "size_mb": 1087.45,
+      "runtime_seconds": 73.2,
+      "completed_at": "2026-08-31T11:22:33.641554"
+    },
+    "One_Foot_in_The_Grave_s01e05_5._The_Eternal_Quadrangle": {
+      "status": "COMPLETED",
+      "series": "Series 1",
+      "filename": "One Foot in The Grave s01e05 5. The Eternal Quadrangle.mp4",
+      "target_name": "One Foot in The Grave s01e05 5. The Eternal Quadrangle - 1080p (4-3 Master).mp4",
+      "shada_path": "/Users/tony/VIDEO/TV/COMEDY/One Foot in The Grave/Series 1/One Foot in The Grave s01e05 5. The Eternal Quadrangle - 1080p (4-3 Master).mp4",
+      "size_mb": 1087.19,
+      "runtime_seconds": 3020.2,
+      "completed_at": "2026-08-31T12:12:53.870287"
+    }
+  },
+  "last_updated": "2026-08-31T12:12:53.870331"
+}
