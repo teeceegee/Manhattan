@@ -50,14 +50,34 @@ final class ArgolisUpscaler {
 
         let fps = Double(videoTrack.nominalFrameRate > 0 ? videoTrack.nominalFrameRate : 25.0)
         let totalFrames = Int(duration * fps)
+
+        // Query model dimensions dynamically
+        var inWidth = 720
+        var inHeight = 540
+        var outWidth = 1440
+        var outHeight = 1080
+
+        if let inDesc = model.modelDescription.inputDescriptionsByName["input"]?.imageConstraint {
+            inWidth = inDesc.pixelsWide
+            inHeight = inDesc.pixelsHigh
+        }
+        if let outDesc = model.modelDescription.outputDescriptionsByName["output"]?.imageConstraint {
+            outWidth = outDesc.pixelsWide
+            outHeight = outDesc.pixelsHigh
+        } else if let outDesc = model.modelDescription.outputDescriptionsByName["var_182"]?.imageConstraint {
+            outWidth = outDesc.pixelsWide
+            outHeight = outDesc.pixelsHigh
+        }
+
         print(String(format: "Input Duration: %.2fs (~%d frames @ %.2f fps)", duration, totalFrames, fps))
+        print("Pipeline Dimensions: \(inWidth)x\(inHeight) Input -> \(outWidth)x\(outHeight) Output")
 
         let reader = try AVAssetReader(asset: asset)
 
         let videoReaderSettings: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-            kCVPixelBufferWidthKey as String: 720,
-            kCVPixelBufferHeightKey as String: 540,
+            kCVPixelBufferWidthKey as String: inWidth,
+            kCVPixelBufferHeightKey as String: inHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
@@ -75,16 +95,17 @@ final class ArgolisUpscaler {
         let writer = try AVAssetWriter(outputURL: outputURL, fileType: .mp4)
         writer.shouldOptimizeForNetworkUse = true
 
+        let targetBitrate = (outWidth >= 1920) ? 6_500_000 : 5_000_000
         let videoCompressionProps: [String: Any] = [
-            AVVideoAverageBitRateKey: 5_000_000,
+            AVVideoAverageBitRateKey: targetBitrate,
             AVVideoProfileLevelKey: kVTProfileLevel_HEVC_Main_AutoLevel as String,
             AVVideoAllowFrameReorderingKey: true
         ]
 
         let videoWriterSettings: [String: Any] = [
             AVVideoCodecKey: AVVideoCodecType.hevc,
-            AVVideoWidthKey: 1440,
-            AVVideoHeightKey: 1080,
+            AVVideoWidthKey: outWidth,
+            AVVideoHeightKey: outHeight,
             AVVideoCompressionPropertiesKey: videoCompressionProps
         ]
 
@@ -93,8 +114,8 @@ final class ArgolisUpscaler {
 
         let sourcePixelBufferAttributes: [String: Any] = [
             kCVPixelBufferPixelFormatTypeKey as String: Int(kCVPixelFormatType_32BGRA),
-            kCVPixelBufferWidthKey as String: 1440,
-            kCVPixelBufferHeightKey as String: 1080,
+            kCVPixelBufferWidthKey as String: outWidth,
+            kCVPixelBufferHeightKey as String: outHeight,
             kCVPixelBufferMetalCompatibilityKey as String: true,
             kCVPixelBufferIOSurfacePropertiesKey as String: [:]
         ]
@@ -287,13 +308,15 @@ final class ArgolisUpscaler {
 // Entry point
 let args = CommandLine.arguments
 if args.count < 3 {
-    print("Usage: argolis-upscale <input.mp4> <output_1080p.mp4> [--mono] [--engine ane|gpu|all] [--model <path>]")
+    print("Usage: argolis-upscale <input.mp4> <output_1080p.mp4> [--mono] [--engine ane|gpu|all] [--model <path>] [--16x9|--widescreen]")
     exit(1)
 }
 
 let inputPath = args[1]
 let outputPath = args[2]
 let isMono = args.contains("--mono") || args.contains("--bw")
+var is16x9 = args.contains("--16x9") || args.contains("--widescreen")
+
 var computeUnits: MLComputeUnits = .all
 if args.contains("--engine") {
     if let idx = args.firstIndex(of: "--engine"), idx + 1 < args.count {
@@ -303,17 +326,29 @@ if args.contains("--engine") {
     }
 }
 
-var modelPath = "/Volumes/Seagate External/Development/Manhattan/tools/realesrgan/models/realesr_1080p_zerocopy.mlmodelc"
+let modelsDir = "/Volumes/Seagate External/Development/Manhattan/tools/realesrgan/models"
+let default4x3Model = "\(modelsDir)/realesr_1080p_zerocopy.mlmodelc"
+let default16x9Model = "\(modelsDir)/realesr_1080p_16x9_zerocopy.mlmodelc"
+
+var modelPath = ""
 if args.contains("--model"), let idx = args.firstIndex(of: "--model"), idx + 1 < args.count {
     modelPath = args[idx + 1]
 } else if let envModel = ProcessInfo.processInfo.environment["ARGOLIS_MODEL_PATH"], !envModel.isEmpty {
     modelPath = envModel
 } else {
-    let binURL = URL(fileURLWithPath: CommandLine.arguments[0]).resolvingSymlinksInPath()
-    let candidateRelative = binURL.deletingLastPathComponent().deletingLastPathComponent().appendingPathComponent("realesrgan/models/realesr_1080p_zerocopy.mlmodelc").path
-    if FileManager.default.fileExists(atPath: candidateRelative) {
-        modelPath = candidateRelative
+    // If not explicitly set, auto-detect aspect ratio from input video
+    if !is16x9 {
+        let testAsset = AVURLAsset(url: URL(fileURLWithPath: inputPath))
+        if let track = testAsset.tracks(withMediaType: .video).first {
+            let size = track.naturalSize.applying(track.preferredTransform)
+            let w = abs(size.width)
+            let h = abs(size.height)
+            if h > 0 && (w / h) > 1.55 {
+                is16x9 = true
+            }
+        }
     }
+    modelPath = is16x9 ? default16x9Model : default4x3Model
 }
 let modelURL = URL(fileURLWithPath: modelPath)
 

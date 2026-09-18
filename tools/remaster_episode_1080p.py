@@ -55,8 +55,15 @@ def get_video_info(video_path):
     has_subtitles = any(s.get("codec_type") == "subtitle" for s in data.get("streams", []))
     return duration, width, height, has_subtitles
 
-def detect_monochrome(video_path, duration):
+def detect_monochrome(video_path, duration, width=None, height=None):
     """Inspect 3 sample frames across the video to automatically detect if content is Black & White."""
+    if width is None or height is None:
+        try:
+            _, width, height, _ = get_video_info(video_path)
+        except Exception:
+            width, height = IN_W, IN_H
+
+    expected_bytes = width * height * 3
     sample_times = [min(60, duration * 0.1), duration * 0.5, max(duration - 60, duration * 0.8)]
     diffs = []
     for t in sample_times:
@@ -65,12 +72,14 @@ def detect_monochrome(video_path, duration):
             "-vframes", "1", "-f", "rawvideo", "-pix_fmt", "rgb24", "-"
         ]
         res_f = subprocess.run(cmd_f, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        if len(res_f.stdout) >= FRAME_IN_BYTES:
-            img = np.frombuffer(res_f.stdout[:FRAME_IN_BYTES], dtype=np.uint8).reshape((IN_H, IN_W, 3))
+        if len(res_f.stdout) >= expected_bytes:
+            img = np.frombuffer(res_f.stdout[:expected_bytes], dtype=np.uint8).reshape((height, width, 3))
             r, g, b = img[:, :, 0].astype(float), img[:, :, 1].astype(float), img[:, :, 2].astype(float)
             diff = np.mean(np.abs(r - g) + np.abs(g - b) + np.abs(b - r))
             diffs.append(diff)
-    avg_diff = sum(diffs) / len(diffs) if diffs else 0
+    if not diffs:
+        return False, 99.0
+    avg_diff = sum(diffs) / len(diffs)
     return avg_diff < 4.5, avg_diff
 
 SWIFT_BIN = os.path.join(TOOLS_DIR, "native", "argolis-upscale")
@@ -137,7 +146,7 @@ def remaster_episode(input_video_path, output_1080p_path, scratch_dir=None, is_m
 
     # Automatic Monochrome Detection if not explicitly set
     if is_monochrome is None:
-        auto_mono, chroma_score = detect_monochrome(input_video_path, duration)
+        auto_mono, chroma_score = detect_monochrome(input_video_path, duration, width, height)
         is_monochrome = auto_mono
         log_func(f"Auto-Detected Content Mode: {'Pure Monochrome (B&W)' if is_monochrome else 'Full Color'} (Chroma Score: {chroma_score:.2f})")
 

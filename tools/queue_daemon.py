@@ -29,7 +29,9 @@ SCRATCH_ROOT = os.path.join(BASE_DIR, "scratch_queue")
 LOG_FILE = os.path.join(BASE_DIR, "upscale_daemon.log")
 LOCK_FILE = "/tmp/argolis_queue_daemon.lock"
 SWIFT_BIN = os.path.join(TOOLS_DIR, "native", "argolis-upscale")
-SWIFT_MODEL = os.path.join(TOOLS_DIR, "realesrgan", "models", "realesr_1080p_zerocopy.mlmodelc")
+SWIFT_MODEL_4X3 = os.path.join(TOOLS_DIR, "realesrgan", "models", "realesr_1080p_zerocopy.mlmodelc")
+SWIFT_MODEL_16X9 = os.path.join(TOOLS_DIR, "realesrgan", "models", "realesr_1080p_16x9_zerocopy.mlmodelc")
+SWIFT_MODEL = SWIFT_MODEL_4X3
 
 # Find VIDEO share mount
 VIDEO_MOUNTS = ["/Volumes/VIDEO", "/Users/tony/VIDEO"]
@@ -125,11 +127,14 @@ def find_pending_episodes(video_mount, queue_items, ignore_set=None):
         if os.path.isfile(full_path) and full_path.endswith(".mp4"):
             if "- 1080p" not in full_path and "- 4K" not in full_path and not os.path.basename(full_path).startswith("._") and not full_path.endswith(".corrupt"):
                 base, ext = os.path.splitext(full_path)
-                out_path = f"{base} - 1080p (4-3 Master).mp4"
-                if not os.path.exists(out_path) or os.path.getsize(out_path) < 10000000:
+                out_4x3 = f"{base} - 1080p (4-3 Master).mp4"
+                out_16x9 = f"{base} - 1080p (16-9 Master).mp4"
+                has_master = (os.path.exists(out_4x3) and os.path.getsize(out_4x3) > 10000000) or \
+                             (os.path.exists(out_16x9) and os.path.getsize(out_16x9) > 10000000)
+                if not has_master:
                     if full_path not in seen and full_path not in ignore_set:
                         seen.add(full_path)
-                        pending.append({"src": full_path, "out": out_path, "name": os.path.basename(full_path)})
+                        pending.append({"src": full_path, "base": base, "name": os.path.basename(full_path)})
         elif os.path.isdir(full_path):
             for root, dirs, files in sorted(os.walk(full_path)):
                 if "Corrupted" in root or "corrupt" in root.lower():
@@ -138,11 +143,14 @@ def find_pending_episodes(video_mount, queue_items, ignore_set=None):
                     if f.endswith(".mp4") and not f.startswith("._") and not f.endswith(".corrupt") and "- 1080p" not in f and "- 4K" not in f and "Side-by-Side" not in f and "Split-Screen" not in f:
                         src_file = os.path.join(root, f)
                         base, ext = os.path.splitext(src_file)
-                        out_file = f"{base} - 1080p (4-3 Master).mp4"
-                        if not os.path.exists(out_file) or os.path.getsize(out_file) < 10000000:
+                        out_4x3 = f"{base} - 1080p (4-3 Master).mp4"
+                        out_16x9 = f"{base} - 1080p (16-9 Master).mp4"
+                        has_master = (os.path.exists(out_4x3) and os.path.getsize(out_4x3) > 10000000) or \
+                                     (os.path.exists(out_16x9) and os.path.getsize(out_16x9) > 10000000)
+                        if not has_master:
                             if src_file not in seen and src_file not in ignore_set:
                                 seen.add(src_file)
-                                pending.append({"src": src_file, "out": out_file, "name": f})
+                                pending.append({"src": src_file, "base": base, "name": f})
     return pending
 
 def detect_and_normalize_pillarbox(video_path, width, height, log_func):
@@ -204,7 +212,7 @@ def detect_and_normalize_pillarbox(video_path, width, height, log_func):
     log_func(f"Pillarbox normalization complete in {time.time() - t_crop:.1f}s. Input is now native 720x540 4:3.")
     return True
 
-def run_transcode(src_file, out_file, is_mono, log_func):
+def run_transcode(src_file, out_file, is_mono, is_widescreen, log_func):
     """Executes Native Swift Zero-Copy bare-metal engine with automatic bitstream sanitization, then multiplexes original audio/chapters via FFmpeg."""
     if os.path.exists(SWIFT_BIN):
         swift_out = out_file + ".video_only.mp4"
@@ -213,8 +221,13 @@ def run_transcode(src_file, out_file, is_mono, log_func):
             if os.path.exists(swift_out):
                 os.remove(swift_out)
             cmd = [SWIFT_BIN, input_path, swift_out]
-            if os.path.exists(SWIFT_MODEL):
-                cmd.extend(["--model", SWIFT_MODEL])
+            if is_widescreen:
+                cmd.append("--16x9")
+                if os.path.exists(SWIFT_MODEL_16X9):
+                    cmd.extend(["--model", SWIFT_MODEL_16X9])
+            else:
+                if os.path.exists(SWIFT_MODEL_4X3):
+                    cmd.extend(["--model", SWIFT_MODEL_4X3])
             if is_mono:
                 cmd.append("--mono")
             log_func(f"Executing Native Swift Engine (Video Only): {' '.join(cmd)}")
@@ -324,22 +337,9 @@ def run_daemon():
 
         job = pending_jobs[0]
         src_path = job["src"]
-        shada_out = job["out"]
+        base_path = job["base"]
         filename = job["name"]
-        local_out = os.path.join(OUTPUT_DIR, os.path.basename(shada_out))
         local_src = os.path.join(WORKING_DIR, filename)
-
-        current_job_info = {
-            "filename": filename,
-            "src": src_path,
-            "target": shada_out,
-            "started_at": datetime.now().isoformat()
-        }
-        update_status(status_file, current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs[1:])
-
-        log(f"\n>>> PICKED UP QUEUE JOB: {filename}")
-        log(f"Source: {src_path}")
-        log(f"Destination: {shada_out}")
 
         t0 = time.time()
         try:
@@ -348,16 +348,36 @@ def run_daemon():
                 log(f"Copying {filename} to local working cache ({os.path.getsize(src_path)/(1024*1024):.1f} MB)...")
                 subprocess.run(["cp", "-X", src_path, local_src], check=True)
 
-            # 2. Detect Content Profile
+            # 2. Detect Content Profile & Aspect Ratio
             duration, width, height, has_subs = get_video_info(local_src)
-            is_mono, chroma_score = detect_monochrome(local_src, duration)
+            is_mono, chroma_score = detect_monochrome(local_src, duration, width, height)
+            is_widescreen = (height > 0 and (width / height) > 1.55)
             log(f"Content Profile: {'Monochrome (B&W)' if is_mono else 'Full Color'} (Chroma Score: {chroma_score:.2f})")
 
             # 2b. Auto-Detect & Normalize 16:9 Pillarboxed 4:3 Content
-            detect_and_normalize_pillarbox(local_src, width, height, log)
+            was_cropped = detect_and_normalize_pillarbox(local_src, width, height, log)
+            if was_cropped:
+                is_widescreen = False
+
+            master_tag = "(16-9 Master)" if is_widescreen else "(4-3 Master)"
+            shada_out = f"{base_path} - 1080p {master_tag}.mp4"
+            local_out = os.path.join(OUTPUT_DIR, os.path.basename(shada_out))
+
+            current_job_info = {
+                "filename": filename,
+                "src": src_path,
+                "target": shada_out,
+                "started_at": datetime.now().isoformat()
+            }
+            update_status(status_file, current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs[1:])
+
+            log(f"\n>>> PICKED UP QUEUE JOB: {filename}")
+            log(f"Source: {src_path}")
+            log(f"Aspect Ratio: {'16:9 Widescreen' if is_widescreen else '4:3 Fullscreen'} ({width}x{height})")
+            log(f"Destination: {shada_out}")
 
             # 3. Run Hardware Remaster
-            run_transcode(local_src, local_out, is_mono, log)
+            run_transcode(local_src, local_out, is_mono, is_widescreen, log)
 
             # 4. Atomic sync of master directly to Shada alongside original
             log(f"Syncing completed master atomically to Shada: {shada_out}...")
