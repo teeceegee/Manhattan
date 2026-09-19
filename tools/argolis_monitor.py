@@ -332,8 +332,15 @@ def main():
             buf.append("\033[K")
             buf.append("[ACTIVE AI TRANSCODING & MEDIA WORKERS]\033[K")
 
+            upscale_paused = os.path.exists("/Users/tony/Library/Application Support/ShadaHEVC/argolis-upscale.stop") or \
+                             os.path.exists("/Volumes/VIDEO/upscale.stop")
             t_ane = parse_stream_telemetry("Idle / Waiting for Queue Job...")
-            if t_ane and t_ane['episode'] != "Idle / Waiting for Queue Job...":
+            if upscale_paused:
+                buf.append("  • Status:        \033[33m[PAUSED BY USER]\033[0m — Run 'argolis resume upscale' to resume\033[K")
+                if t_ane and t_ane['episode'] != "Idle / Waiting for Queue Job...":
+                    buf.append(f"  > SUSPENDED:     {t_ane['episode']}\033[K")
+                    buf.append(f"  • Last Progress: {t_ane['chunk']}\033[K")
+            elif t_ane and t_ane['episode'] != "Idle / Waiting for Queue Job...":
                 buf.append(f"  > ACTIVE EPISODE: {t_ane['episode']}\033[K")
                 buf.append(f"  • Acceleration:  16-Core Neural Engine (Primary) + Metal GPU\033[K")
                 buf.append(f"  • Progress:      {t_ane['chunk']} (Throughput: {t_ane['fps']})\033[K")
@@ -345,6 +352,9 @@ def main():
             hevc = hevc_progress()
             buf.append("\033[K")
             buf.append("[HEVC TRANSCODING]\033[K")
+            hevc_paused = os.path.exists("/Users/tony/Library/Application Support/ShadaHEVC/argolis-library-jobs.stop")
+            if hevc_paused:
+                buf.append("  • Status:        \033[33m[PAUSED BY USER]\033[0m — Run 'argolis resume hevc' to resume\033[K")
             if "error" in hevc:
                 buf.append(f"  • Status:        {hevc['error']}\033[K")
             else:

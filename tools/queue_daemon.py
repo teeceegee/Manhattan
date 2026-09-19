@@ -16,6 +16,8 @@ import time
 import json
 import fcntl
 import shutil
+import signal
+import select
 import argparse
 import subprocess
 import numpy as np
@@ -32,6 +34,12 @@ SWIFT_BIN = os.path.join(TOOLS_DIR, "native", "argolis-upscale")
 SWIFT_MODEL_4X3 = os.path.join(TOOLS_DIR, "realesrgan", "models", "realesr_1080p_zerocopy.mlmodelc")
 SWIFT_MODEL_16X9 = os.path.join(TOOLS_DIR, "realesrgan", "models", "realesr_1080p_16x9_zerocopy.mlmodelc")
 SWIFT_MODEL = SWIFT_MODEL_4X3
+
+# Pause & Control State Files
+LOCAL_STOP_FILE = "/Users/tony/Library/Application Support/ShadaHEVC/argolis-upscale.stop"
+LOCAL_PAUSE_AFTER_CURRENT_FILE = "/Users/tony/Library/Application Support/ShadaHEVC/argolis-upscale.pause-after-current"
+LOCAL_ABORT_FILE = "/Users/tony/Library/Application Support/ShadaHEVC/argolis-upscale.abort"
+REMOTE_STOP_FILE = "upscale.stop"
 
 # Find VIDEO share mount
 VIDEO_MOUNTS = ["/Volumes/VIDEO", "/Users/tony/VIDEO"]
@@ -73,6 +81,25 @@ def log(msg):
     with open(LOG_FILE, "a") as f:
         f.write(line + "\n")
 
+def is_paused(video_mount=None):
+    if os.path.exists(LOCAL_STOP_FILE):
+        return True
+    if video_mount:
+        remote = os.path.join(video_mount, REMOTE_STOP_FILE)
+        if os.path.exists(remote):
+            return True
+    else:
+        for m in VIDEO_MOUNTS:
+            if os.path.exists(m) and os.path.exists(os.path.join(m, REMOTE_STOP_FILE)):
+                return True
+    return False
+
+def is_abort_requested():
+    return os.path.exists(LOCAL_ABORT_FILE)
+
+def is_pause_after_current_requested():
+    return os.path.exists(LOCAL_PAUSE_AFTER_CURRENT_FILE)
+
 def read_queue(queue_path):
     if not os.path.exists(queue_path):
         return []
@@ -84,10 +111,10 @@ def read_queue(queue_path):
                 items.append(line)
     return items
 
-def update_status(status_path, current_job=None, completed_jobs=None, pending_jobs=None):
+def update_status(status_path, daemon_status="RUNNING", current_job=None, completed_jobs=None, pending_jobs=None):
     data = {
         "last_updated": datetime.now().isoformat(),
-        "daemon_status": "RUNNING",
+        "daemon_status": daemon_status,
         "current_job": current_job,
         "completed_count": len(completed_jobs) if completed_jobs else 0,
         "pending_count": len(pending_jobs) if pending_jobs else 0,
@@ -212,7 +239,7 @@ def detect_and_normalize_pillarbox(video_path, width, height, log_func):
     log_func(f"Pillarbox normalization complete in {time.time() - t_crop:.1f}s. Input is now native 720x540 4:3.")
     return True
 
-def run_transcode(src_file, out_file, is_mono, is_widescreen, log_func):
+def run_transcode(src_file, out_file, is_mono, is_widescreen, log_func, status_path=None, current_job_info=None, completed_history=None, pending_jobs=None):
     """Executes Native Swift Zero-Copy bare-metal engine with automatic bitstream sanitization, then multiplexes original audio/chapters via FFmpeg."""
     if os.path.exists(SWIFT_BIN):
         swift_out = out_file + ".video_only.mp4"
@@ -232,10 +259,62 @@ def run_transcode(src_file, out_file, is_mono, is_widescreen, log_func):
                 cmd.append("--mono")
             log_func(f"Executing Native Swift Engine (Video Only): {' '.join(cmd)}")
             p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            for line in p.stdout:
-                line_s = line.strip()
-                if line_s:
-                    log_func(line_s)
+            suspended = False
+
+            while True:
+                # Check for abort request
+                if is_abort_requested():
+                    log_func("Abort signal received! Terminating upscaler...")
+                    try:
+                        p.terminate()
+                        p.wait(timeout=5)
+                    except Exception:
+                        p.kill()
+                    if os.path.exists(LOCAL_ABORT_FILE):
+                        try: os.remove(LOCAL_ABORT_FILE)
+                        except Exception: pass
+                    if os.path.exists(swift_out):
+                        try: os.remove(swift_out)
+                        except Exception: pass
+                    raise InterruptedError("Upscale job aborted by user request")
+
+                # Check for pause request
+                if is_paused() and not suspended:
+                    log_func(f"Pause signal received! Suspending active upscaler (PID {p.pid})...")
+                    try:
+                        p.send_signal(signal.SIGSTOP)
+                        suspended = True
+                        if status_path:
+                            update_status(status_path, daemon_status="PAUSED (Job Suspended)", current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs)
+                    except Exception as e_sig:
+                        log_func(f"Warning sending SIGSTOP: {e_sig}")
+
+                if suspended:
+                    if not is_paused():
+                        log_func(f"Resume signal received! Resuming active upscaler (PID {p.pid})...")
+                        try:
+                            p.send_signal(signal.SIGCONT)
+                            suspended = False
+                            if status_path:
+                                update_status(status_path, daemon_status="RUNNING", current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs)
+                        except Exception as e_sig:
+                            log_func(f"Warning sending SIGCONT: {e_sig}")
+                    else:
+                        time.sleep(1)
+                        continue
+
+                rlist, _, _ = select.select([p.stdout], [], [], 1.0)
+                if rlist:
+                    line = p.stdout.readline()
+                    if line:
+                        line_s = line.strip()
+                        if line_s:
+                            log_func(line_s)
+                    else:
+                        break
+                elif p.poll() is not None:
+                    break
+
             p.wait()
             return p.returncode
 
@@ -326,8 +405,18 @@ def run_daemon():
             queue_items = read_queue(queue_file)
             pending_jobs = find_pending_episodes(video_mount, queue_items, ignore_set=failed_jobs)
 
+            if is_paused(video_mount):
+                log("Upscaling is PAUSED via stop file. Waiting for resume...")
+                update_status(status_file, daemon_status="PAUSED", current_job=None, completed_jobs=completed_history, pending_jobs=pending_jobs)
+                while is_paused(video_mount):
+                    time.sleep(5)
+                log("Upscaling RESUMED. Resuming queue processing...")
+                update_status(status_file, daemon_status="RUNNING", current_job=None, completed_jobs=completed_history, pending_jobs=pending_jobs)
+                continue
+
             if not pending_jobs:
-                update_status(status_file, current_job=None, completed_jobs=completed_history, pending_jobs=[])
+                current_status = "PAUSED" if is_paused(video_mount) else "RUNNING"
+                update_status(status_file, daemon_status=current_status, current_job=None, completed_jobs=completed_history, pending_jobs=[])
                 time.sleep(20)
                 continue
         except Exception as e:
@@ -369,7 +458,7 @@ def run_daemon():
                 "target": shada_out,
                 "started_at": datetime.now().isoformat()
             }
-            update_status(status_file, current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs[1:])
+            update_status(status_file, daemon_status="RUNNING", current_job=current_job_info, completed_jobs=completed_history, pending_jobs=pending_jobs[1:])
 
             log(f"\n>>> PICKED UP QUEUE JOB: {filename}")
             log(f"Source: {src_path}")
@@ -377,7 +466,9 @@ def run_daemon():
             log(f"Destination: {shada_out}")
 
             # 3. Run Hardware Remaster
-            run_transcode(local_src, local_out, is_mono, is_widescreen, log)
+            run_transcode(local_src, local_out, is_mono, is_widescreen, log,
+                          status_path=status_file, current_job_info=current_job_info,
+                          completed_history=completed_history, pending_jobs=pending_jobs[1:])
 
             # 4. Atomic sync of master directly to Shada alongside original
             log(f"Syncing completed master atomically to Shada: {shada_out}...")
@@ -401,12 +492,36 @@ def run_daemon():
             completed_history.append(current_job_info)
             log(f"SUCCESS: Completed {filename} in {elapsed/60:.2f} mins ({elapsed:.1f}s)")
 
+            # Check if pause-after-current was requested
+            if is_pause_after_current_requested():
+                log(f"Pause-after-current triggered: pausing queue after completion of {filename}.")
+                try: os.remove(LOCAL_PAUSE_AFTER_CURRENT_FILE)
+                except Exception: pass
+                try:
+                    with open(LOCAL_STOP_FILE, "w") as sf:
+                        sf.write(f"Paused after completion of {filename} at {datetime.now().isoformat()}\n")
+                except Exception: pass
+
             # Auto-sync live manifest to Confluence Page 6455298
             try:
                 from sync_confluence_manifest import update_confluence
                 update_confluence()
             except Exception as e_conf:
                 log(f"Warning updating Confluence manifest: {e_conf}")
+
+        except InterruptedError as e_int:
+            log(f"\n[QUEUE-DAEMON] {e_int}")
+            if os.path.exists(local_src):
+                try: os.remove(local_src)
+                except Exception: pass
+            if os.path.exists(local_out):
+                try: os.remove(local_out)
+                except Exception: pass
+            update_status(status_file, daemon_status="PAUSED", current_job=None, completed_jobs=completed_history, pending_jobs=pending_jobs)
+            while is_paused(video_mount):
+                time.sleep(5)
+            log("[QUEUE-DAEMON] Upscaling RESUMED. Resuming queue processing...")
+            update_status(status_file, daemon_status="RUNNING", current_job=None, completed_jobs=completed_history, pending_jobs=pending_jobs)
 
         except Exception as e:
             log(f"ERROR processing {filename}: {str(e)}")
